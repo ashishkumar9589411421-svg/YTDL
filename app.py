@@ -45,10 +45,14 @@ if os.path.exists(COOKIE_FILE):
 print("----------------------")
 
 def get_secret_key():
-    if os.environ.get('SECRET_KEY'): return os.environ.get('SECRET_KEY')
+    if os.environ.get('SECRET_KEY'):
+        return os.environ.get('SECRET_KEY')
     if os.path.exists(SECRET_FILE):
-        try: with open(SECRET_FILE, 'r') as f: return f.read().strip()
-        except: pass
+        try: 
+            with open(SECRET_FILE, 'r') as f:
+                return f.read().strip()
+        except:
+            pass
     return secrets.token_hex(32)
 
 app.config['SECRET_KEY'] = get_secret_key()
@@ -255,7 +259,6 @@ def contact_submit():
 # -------------------------
 # ADMIN API 
 # -------------------------
-# [Admin routes kept same as before]
 @app.route("/api/admin/messages", methods=["GET"])
 def get_messages():
     if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
@@ -287,7 +290,6 @@ def safe_float(val):
     except: return 0.0
 
 def get_video_formats(url):
-    # Standard Browser User-Agent (NOT Instagram)
     ydl_opts = { 
         "quiet": True, 
         "no_warnings": True, 
