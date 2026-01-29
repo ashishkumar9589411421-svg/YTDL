@@ -20,7 +20,6 @@ import jwt
 # -------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path='')
-# Fix 405 Errors: Allow all origins and methods
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Secrets & Cookies
@@ -172,7 +171,7 @@ def is_admin_request(request):
     return row and row['is_admin'] == 1
 
 # -------------------------
-# ROUTES (FIXED 405 ERROR)
+# ROUTES
 # -------------------------
 @app.route('/')
 def index(): return send_file('index.html')
@@ -377,7 +376,7 @@ def admin_reset_pass():
     return jsonify({"message": "Reset"})
 
 # -------------------------
-# DOWNLOADER LOGIC (YOUTUBE + OPTIONS FIXED)
+# DOWNLOADER LOGIC (YOUTUBE + AUTO-DETECT FIX)
 # -------------------------
 def format_bytes(size):
     if not size: return "N/A"
@@ -391,17 +390,12 @@ def safe_float(val):
     try: return float(val) if val else 0.0
     except: return 0.0
 
-# ALLOW OPTIONS METHOD FOR CORS
-@app.route("/api/info", methods=["POST", "OPTIONS"])
-def api_info(): 
-    if request.method == "OPTIONS": return jsonify({"status":"ok"}), 200
-    
-    # YOUTUBE CONFIG
+def get_video_formats(url):
     ydl_opts = { 
         "quiet": True, 
         "no_warnings": True, 
         "noplaylist": True,
-        # Standard Browser User-Agent (NOT Instagram)
+        # Default Browser User-Agent (NOT Instagram!)
         "http_headers": { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
         "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         "ffmpeg_location": FFMPEG_PATH
@@ -409,8 +403,9 @@ def api_info():
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(request.json.get("url"), download=False)
+            info = ydl.extract_info(url, download=False)
             formats_list = []
+            
             duration = safe_float(info.get('duration'))
             mp3_size = (128 * 1000 * duration) / 8 if duration > 0 else 0
             formats_list.append({"id": "mp3", "type": "audio", "quality": "Audio Only (MP3)", "ext": "mp3", "size": format_bytes(mp3_size)})
@@ -421,6 +416,7 @@ def api_info():
                 if not h or h in seen_res or h < 360: continue
                 if f.get('vcodec') == 'none': continue 
                 seen_res.add(h)
+                
                 f_size = safe_float(f.get('filesize') or f.get('filesize_approx'))
                 if f_size == 0 and duration > 0:
                     tbr = safe_float(f.get('tbr')); 
@@ -436,45 +432,15 @@ def api_info():
                 })
             
             formats_list.sort(key=lambda x: x.get('height', 0), reverse=True)
-            return jsonify({ 
+            return { 
                 "title": info.get("title", "YouTube Video"), 
                 "thumbnail": info.get("thumbnail", ""), 
                 "duration": info.get("duration_string", "00:00"), 
                 "formats": formats_list 
-            })
+            }
     except Exception as e: 
         print(f"Info Error: {e}")
-        return jsonify({"error": str(e)}), 400
-
-# ALLOW OPTIONS METHOD FOR CORS
-@app.route("/api/download", methods=["POST", "OPTIONS"])
-def api_download():
-    if request.method == "OPTIONS": return jsonify({"status":"ok"}), 200
-    
-    ip = request.remote_addr
-    if is_banned(ip): return jsonify({"error": "BANNED", "message": "IP Banned"}), 403
-    
-    conn, t = get_db_connection()
-    c = conn.cursor()
-    q = "SELECT value FROM settings WHERE key=%s" if t == "postgres" else "SELECT value FROM settings WHERE key=?"
-    c.execute(q, ('maintenance',))
-    m = c.fetchone()
-    conn.close()
-    if m and m['value'] == 'true' and not is_admin_request(request): return jsonify({"error": "MAINTENANCE", "message": "Under maintenance"}), 503
-
-    user_id = get_user_from_token(request)
-    tokens_left, _ = check_tokens(ip, user_id)
-
-    if tokens_left <= 0:
-        msg = "Daily limit reached (15/15)." if user_id else "Guest limit reached (5/5). Login for more!"
-        return jsonify({"error": "LIMIT_REACHED", "message": msg}), 403
-
-    consume_token(ip, user_id)
-    data = request.json
-    job_id = str(uuid.uuid4())
-    job_status[job_id] = {"status": "queued", "percent": "0"}
-    executor.submit(process_download, job_id, data.get("url"), data.get("format_id"))
-    return jsonify({"job_id": job_id})
+        return None
 
 def process_download(job_id, url, fmt_id):
     with download_semaphore:
