@@ -1,8 +1,8 @@
 Flask==3.0.0
 flask-cors==4.0.0
+# Get latest dev version to fix n-token challenges
+yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@master
 gunicorn==21.2.0
 PyJWT==2.8.0
 Werkzeug==3.0.1
 psycopg2-binary==2.9.9
-# This installs the absolute latest version directly from GitHub
-yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@master
