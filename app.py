@@ -33,11 +33,10 @@ if os.path.exists(COOKIE_FILE):
 else:
     print(f"⚠️ NO COOKIES FOUND (Upload cookies.txt for better reliability)")
 
-# Check for Node.js (Critical for YouTube)
-if shutil.which("node"):
-    print(f"✅ NODE.JS FOUND: {shutil.which('node')}")
+if shutil.which("ffmpeg"):
+    print(f"✅ FFMPEG FOUND: {shutil.which('ffmpeg')}")
 else:
-    print(f"❌ NODE.JS MISSING: YouTube downloads may fail!")
+    print(f"❌ FFMPEG MISSING: Merging will fail!")
 print("-----------------------------")
 
 def get_secret_key():
@@ -181,25 +180,19 @@ def serve_static(path):
 
 @app.route("/api/register", methods=["POST"])
 def register():
-    data = request.json
-    conn, t = get_db_connection()
-    c = conn.cursor()
+    data = request.json; conn, t = get_db_connection(); c = conn.cursor()
     ref_code = (data["username"][:4] + secrets.token_hex(2)).upper()
-    used_ref = data.get("referral_code", "").strip().upper()
-    bonus = 0
+    used_ref = data.get("referral_code", "").strip().upper(); bonus = 0
     try:
         if used_ref:
             q = "SELECT id FROM users WHERE referral_code=%s" if t == "postgres" else "SELECT id FROM users WHERE referral_code=?"
-            c.execute(q, (used_ref,))
-            referrer = c.fetchone()
+            c.execute(q, (used_ref,)); referrer = c.fetchone()
             if referrer:
                 u_q = "UPDATE users SET tokens = tokens + 10 WHERE id=%s" if t == "postgres" else "UPDATE users SET tokens = tokens + 10 WHERE id=?"
-                c.execute(u_q, (referrer['id'] if isinstance(referrer, dict) else referrer[0],))
-                bonus = 10 
+                c.execute(u_q, (referrer['id'] if isinstance(referrer, dict) else referrer[0],)); bonus = 10 
         q = "INSERT INTO users(username, email, password, tokens, last_reset, is_admin, plan, referral_code, referred_by) VALUES (%s, %s, %s, %s, %s, 0, 'Free', %s, %s)" if t == "postgres" else "INSERT INTO users(username, email, password, tokens, last_reset, is_admin, plan, referral_code, referred_by) VALUES (?, ?, ?, ?, ?, 0, 'Free', ?, ?)"
         c.execute(q, (data["username"].lower(), data.get("email",""), generate_password_hash(data["password"]), 15+bonus, datetime.now(), ref_code, used_ref if bonus>0 else None))
-        conn.commit()
-        return jsonify({"message": f"Registered! {'+10 Credits' if bonus else ''}"}), 201
+        conn.commit(); return jsonify({"message": f"Registered! {'+10 Credits' if bonus else ''}"}), 201
     except: return jsonify({"message": "Username taken"}), 409
     finally: conn.close()
 
@@ -381,7 +374,7 @@ def admin_reset_pass():
     return jsonify({"message": "Reset"})
 
 # -------------------------
-# DOWNLOADER LOGIC (DOCKER / NODE.JS COMPATIBLE)
+# DOWNLOADER LOGIC (SMART FALLBACK)
 # -------------------------
 def format_bytes(size):
     if not size: return "N/A"
@@ -396,7 +389,6 @@ def safe_float(val):
     except: return 0.0
 
 def get_video_formats(url):
-    # Standard Config - No Spoofing Needed with Node.js present
     ydl_opts = { 
         "quiet": True, 
         "no_warnings": True, 
@@ -413,18 +405,15 @@ def get_video_formats(url):
             duration = safe_float(info.get('duration'))
             mp3_size = (128 * 1000 * duration) / 8 if duration > 0 else 0
             
-            # Always offer MP3
             formats_list.append({"id": "mp3", "type": "audio", "quality": "Audio Only (MP3)", "ext": "mp3", "size": format_bytes(mp3_size)})
 
             seen_res = set()
             for f in info.get('formats', []):
                 h = f.get('height')
-                # Skip duplicates, low quality, and audio-only streams in the video list
                 if not h or h in seen_res or h < 360: continue
                 if f.get('vcodec') == 'none': continue 
 
                 seen_res.add(h)
-                
                 f_size = safe_float(f.get('filesize') or f.get('filesize_approx'))
                 if f_size == 0 and duration > 0:
                     tbr = safe_float(f.get('tbr')) 
@@ -438,9 +427,7 @@ def get_video_formats(url):
                     "size": format_bytes(f_size), 
                     "height": h
                 })
-            
             formats_list.sort(key=lambda x: x.get('height', 0), reverse=True)
-
             return { 
                 "title": info.get("title", "YouTube Video"), 
                 "thumbnail": info.get("thumbnail", ""), 
@@ -460,42 +447,62 @@ def process_download(job_id, url, fmt_id):
                 clean_percent = re.sub(r'\x1b\[[0-9;]*m', '', raw_percent).strip()
                 job_status[job_id].update({"percent": clean_percent.replace("%",""), "speed": d.get("_speed_str", "N/A")})
 
-        ydl_opts = {
+        # --- SMART RETRY LOGIC ---
+        # 1. Try to get exact quality requested
+        # 2. If failure (e.g. format unavailable), try 'best'
+        # -------------------------
+        
+        attempts = []
+        
+        # Build Attempt 1: Specific Format
+        ydl_opts_1 = {
             "outtmpl": os.path.join(DOWNLOAD_FOLDER, f"{job_id}_%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
-            "concurrent_fragment_downloads": 10,
-            "buffersize": 1024 * 1024,
             "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
             "ffmpeg_location": FFMPEG_PATH
         }
 
         if fmt_id == "mp3":
-            ydl_opts["format"] = "bestaudio/best"
-            ydl_opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
+            ydl_opts_1["format"] = "bestaudio/best"
+            ydl_opts_1["postprocessors"] = [{"key": "FFmpegExtractAudio","preferredcodec": "mp3","preferredquality": "192"}]
+            attempts.append(ydl_opts_1) # Only 1 attempt for MP3
         elif "video-" in fmt_id:
             height = fmt_id.replace("video-", "")
-            ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
-            ydl_opts["merge_output_format"] = "mp4"
+            ydl_opts_1["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+            ydl_opts_1["merge_output_format"] = "mp4"
+            attempts.append(ydl_opts_1)
+            
+            # Attempt 2: Fallback to BEST available if specific failed
+            ydl_opts_2 = ydl_opts_1.copy()
+            ydl_opts_2["format"] = "best"
+            attempts.append(ydl_opts_2)
         else:
-            ydl_opts["format"] = "best"
+            ydl_opts_1["format"] = "best"
+            attempts.append(ydl_opts_1)
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.extract_info(url, download=True)
-                for f in os.listdir(DOWNLOAD_FOLDER):
-                    if f.startswith(job_id):
-                        job_status[job_id].update({"status": "completed", "file": os.path.join(DOWNLOAD_FOLDER, f), "filename": f})
-                        return
-                # If no file found after successful yt-dlp run, something is wrong
-                raise Exception("File missing after download")
-        except Exception as e:
-            print(f"Download Error: {e}")
-            job_status[job_id].update({"status": "error", "error": str(e)})
+        success = False
+        last_error = ""
+
+        for i, opts in enumerate(attempts):
+            try:
+                print(f"Attempt {i+1}/{len(attempts)} for {job_id}...")
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.extract_info(url, download=True)
+                    # Verify file exists
+                    for f in os.listdir(DOWNLOAD_FOLDER):
+                        if f.startswith(job_id):
+                            job_status[job_id].update({"status": "completed", "file": os.path.join(DOWNLOAD_FOLDER, f), "filename": f})
+                            success = True
+                            break
+                    if success: break
+                    raise Exception("File missing after download")
+            except Exception as e:
+                print(f"Attempt {i+1} Failed: {e}")
+                last_error = str(e)
+        
+        if not success:
+            job_status[job_id].update({"status": "error", "error": f"Failed: {last_error}"})
 
 @app.route("/api/info", methods=["POST", "OPTIONS"])
 def api_info(): 
