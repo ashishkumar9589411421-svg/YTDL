@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>In.dl - YouTube Downloader</title>
+    <title>In.dl - Instagram & Reels Downloader</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --bg-deep: #000000; --primary: #ff0000; --primary-glow: rgba(255, 0, 0, 0.5); --glass: rgba(20, 20, 20, 0.9); --border: rgba(255, 255, 255, 0.15); --text-main: #ffffff; --text-dim: #888; --font: 'Segoe UI', Roboto, sans-serif; --gold: #ffd700; --success: #00ff88; }
+        :root { --bg-deep: #000000; --primary: #d62976; --glass: rgba(20, 20, 20, 0.9); --border: rgba(255, 255, 255, 0.15); --text-main: #ffffff; --text-dim: #888; --font: 'Segoe UI', Roboto, sans-serif; --gold: #ffd700; --success: #00ff88; }
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: var(--font); }
         body { background-color: var(--bg-deep); background-image: radial-gradient(circle at 50% 50%, #111 0%, #000 100%); color: var(--text-main); min-height: 100vh; overflow-x: hidden; }
         
@@ -15,7 +15,8 @@
         @keyframes floatRise { 0% { transform: translateY(110vh) scale(0.8) rotate(0deg); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(-10vh) scale(1.5) rotate(360deg); opacity: 0; } }
         
         #announcementBar { background: var(--primary); color: white; text-align: center; padding: 8px; font-weight: bold; font-size: 0.9rem; display: none; z-index: 200; position: relative; }
-        
+        #maintOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 9999; display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+
         header { background: rgba(0,0,0,0.8); backdrop-filter: blur(20px); padding: 20px 0; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
         .nav-container { max-width: 1200px; margin: 0 auto; padding: 0 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
         .logo { font-size: 1.8rem; font-weight: 900; letter-spacing: -1px; display: flex; align-items: center; gap: 12px; text-shadow: 0 0 20px var(--primary-glow); }
@@ -158,6 +159,13 @@
 
     <div id="announcementBar"></div>
 
+    <div id="maintOverlay">
+        <i class="fas fa-tools" style="font-size: 4rem; color: var(--primary); margin-bottom: 20px;"></i>
+        <h1 style="font-size: 2.5rem; margin-bottom: 10px;">Under Maintenance</h1>
+        <p style="color: #888;">We are upgrading the servers. Please check back in 15 minutes.</p>
+        <button onclick="location.reload()" class="liquid-btn" style="margin-top:20px; width: auto;">Refresh</button>
+    </div>
+
     <div class="modal-wrap" id="authModal">
         <div class="modal-box">
             <i class="fas fa-times" onclick="closeModal('authModal')" style="position:absolute; top:20px; right:20px; cursor:pointer; font-size:1.5rem; color:#555"></i>
@@ -249,7 +257,7 @@
 
     <header>
         <div class="nav-container">
-            <div class="logo"><i class="fab fa-youtube"></i> In.dl</div>
+            <div class="logo"><i class="fab fa-instagram"></i> In.dl</div>
             <div class="user-nav">
                 <div class="token-pill" onclick="checkLoginAndOpenPlan()" title="Click to Top-up"><i class="fas fa-coins"></i> <span id="tokenCount">...</span></div>
                 <div id="userArea"></div> 
@@ -260,14 +268,14 @@
     <div class="container">
         
         <div class="hero">
-            <h1 id="heroTitle">YT Media Saver</h1>
-            <p id="heroSub">Download Videos, Shorts, and Audio instantly.</p>
+            <h1 id="heroTitle">IG Media Saver</h1>
+            <p id="heroSub">Download Reels, Stories, and Posts instantly.</p>
         </div>
 
         <div class="search-container">
             <div class="search-bar">
                 <div class="paste-icon" onclick="pasteFromClipboard()"><i class="fas fa-paste"></i></div>
-                <input type="text" class="url-inp" id="urlInput" placeholder="Paste YouTube link here...">
+                <input type="text" class="url-inp" id="urlInput" placeholder="Paste Instagram link here...">
                 <button class="go-btn" id="searchBtn" onclick="fetchInfo()"><i class="fas fa-arrow-right"></i></button>
             </div>
         </div>
@@ -290,10 +298,10 @@
 
         <div class="section-head">Ecosystem</div>
         <div class="grid-box" id="relateGrid">
-            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-video"></i></div><span style="font-weight:700">Videos</span></a>
-            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-mobile"></i></div><span style="font-weight:700">Shorts</span></a>
-            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-music"></i></div><span style="font-weight:700">Audio</span></a>
-            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-closed-captioning"></i></div><span style="font-weight:700">Subtitles</span></a>
+            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-video"></i></div><span style="font-weight:700">Reels</span></a>
+            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-clock"></i></div><span style="font-weight:700">Stories</span></a>
+            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-image"></i></div><span style="font-weight:700">Posts</span></a>
+            <a href="#" class="quick-card"><div class="quick-icon"><i class="fas fa-tv"></i></div><span style="font-weight:700">IGTV</span></a>
         </div>
 
         <div class="section-head">How It Works</div>
@@ -301,7 +309,7 @@
             <div class="step-card">
                 <div class="step-icon"><i class="fas fa-copy"></i></div>
                 <h4>1. Copy Link</h4>
-                <p style="color:#666; margin-top:10px; font-size:0.9rem">Copy the URL of the YouTube Video.</p>
+                <p style="color:#666; margin-top:10px; font-size:0.9rem">Copy the URL of the Instagram Reel or Post.</p>
             </div>
             <div class="step-card">
                 <div class="step-icon"><i class="fas fa-paste"></i></div>
@@ -334,7 +342,7 @@
 
     <footer>
         <div class="footer-grid">
-            <div class="footer-col"><h4 style="color:white; margin-bottom:20px">In.dl</h4><p style="color:#666">The best YouTube Downloader.</p></div>
+            <div class="footer-col"><h4 style="color:white; margin-bottom:20px">In.dl</h4><p style="color:#666">The best Instagram Downloader.</p></div>
             <div class="footer-col"><h4 style="color:white; margin-bottom:20px">Support</h4><a href="about.html" class="footer-link">About</a><a href="#" class="footer-link">Contact</a></div>
             <div class="footer-col"><h4 style="color:white; margin-bottom:20px">Legal</h4><a href="privacy.html" class="footer-link">Privacy</a><a href="terms.html" class="footer-link">Terms</a></div>
         </div>
@@ -388,7 +396,7 @@
 
         function spawnParticles() { 
             const container = document.getElementById('voidStream'); 
-            const icons = ['fa-play', 'fa-video', 'fa-youtube', 'fa-music', 'fa-film']; 
+            const icons = ['fa-camera', 'fa-image', 'fa-video', 'fa-heart', 'fa-comment']; 
             for(let i=0; i<20; i++) { 
                 let el = document.createElement('i'); 
                 el.className = `fas ${icons[Math.floor(Math.random()*icons.length)]} stream-icon`; 
@@ -434,6 +442,15 @@
                 const res = await fetch(`${API_URL}/status`, { headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {} }); 
                 const d = await res.json(); 
 
+                // NEW FEATURE: MAINTENANCE CHECK (COMMENTED OUT TO PREVENT LOCKOUT)
+                /*
+                if(d.maintenance && !d.is_admin) {
+                    document.getElementById('maintOverlay').style.display = 'flex';
+                    return; // Stop execution to block access
+                }
+                */
+
+                // NEW FEATURE: ANNOUNCEMENT BAR
                 if(d.announcement) {
                     const bar = document.getElementById('announcementBar');
                     bar.innerText = d.announcement;
@@ -482,6 +499,7 @@
                 const res = await fetch(`${API_URL}/download`, { method: 'POST', headers, body: JSON.stringify({ url, format_id: fmtId }) }); 
                 const data = await res.json(); 
                 
+                // NEW FEATURE: Handle Banned/Maintenance Errors
                 if(res.status === 403 && data.error === "BANNED") {
                     alert(data.message);
                     btn.innerHTML = orgHtml; btn.disabled = false;
