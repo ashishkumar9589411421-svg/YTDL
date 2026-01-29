@@ -49,6 +49,7 @@ def get_secret_key():
     
     if os.path.exists(SECRET_FILE):
         try: 
+            # FIXED: Indentation is now correct
             with open(SECRET_FILE, 'r') as f: 
                 return f.read().strip()
         except: 
@@ -476,6 +477,7 @@ def process_download(job_id, url, fmt_id):
                     common_opts["merge_output_format"] = "mp4"
                 else:
                     # FALLBACK: Download best SINGLE file (usually 720p)
+                    # This prevents the "Requested format not available" error
                     print(f"⚠️ FFmpeg Missing: Cannot merge 1080p. Falling back to best single file.")
                     common_opts["format"] = "best"
             else:
