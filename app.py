@@ -26,18 +26,21 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 SECRET_FILE = os.path.join(BASE_DIR, "secret.key")
 COOKIE_FILE = os.path.join(BASE_DIR, "cookies.txt")
 
-# --- DEBUG CHECKS ---
-print("--- SYSTEM STARTUP CHECKS ---")
-if os.path.exists(COOKIE_FILE):
-    print(f"✅ COOKIES FOUND: {os.path.getsize(COOKIE_FILE)} bytes")
-else:
-    print(f"⚠️ NO COOKIES FOUND (Upload cookies.txt for better reliability)")
-
+# --- CRITICAL SYSTEM CHECK ---
+print("--- STARTUP DIAGNOSTICS ---")
+HAS_FFMPEG = False
 if shutil.which("ffmpeg"):
-    print(f"✅ FFMPEG FOUND: {shutil.which('ffmpeg')}")
+    HAS_FFMPEG = True
+    print("✅ FFmpeg Detected: High Quality (1080p+) Enabled")
 else:
-    print(f"❌ FFMPEG MISSING: Merging will fail!")
-print("-----------------------------")
+    print("⚠️ FFmpeg MISSING: Switched to Compatibility Mode (720p Max)")
+    print("   (To fix: Use Docker Runtime on Render)")
+
+if os.path.exists(COOKIE_FILE):
+    print(f"✅ Cookies Found: {os.path.getsize(COOKIE_FILE)} bytes")
+else:
+    print("⚠️ No Cookies Found: Age-restricted videos may fail")
+print("---------------------------")
 
 def get_secret_key():
     if os.environ.get('SECRET_KEY'): return os.environ.get('SECRET_KEY')
@@ -55,10 +58,10 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# FFmpeg Path
-if os.path.exists(os.path.join(BASE_DIR, "ffmpeg.exe")): FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe") 
-elif shutil.which("ffmpeg"): FFMPEG_PATH = shutil.which("ffmpeg") 
-else: FFMPEG_PATH = None 
+# FFmpeg Path Logic
+FFMPEG_PATH = shutil.which("ffmpeg")
+if os.path.exists(os.path.join(BASE_DIR, "ffmpeg.exe")): 
+    FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe") 
 
 # Threading
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get('MAX_WORKERS', 2))
@@ -374,7 +377,7 @@ def admin_reset_pass():
     return jsonify({"message": "Reset"})
 
 # -------------------------
-# DOWNLOADER LOGIC (SMART FALLBACK)
+# DOWNLOADER LOGIC (AUTO-DETECT MODE)
 # -------------------------
 def format_bytes(size):
     if not size: return "N/A"
@@ -389,6 +392,7 @@ def safe_float(val):
     except: return 0.0
 
 def get_video_formats(url):
+    # Standard Config
     ydl_opts = { 
         "quiet": True, 
         "no_warnings": True, 
@@ -401,10 +405,10 @@ def get_video_formats(url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats_list = []
-            
             duration = safe_float(info.get('duration'))
             mp3_size = (128 * 1000 * duration) / 8 if duration > 0 else 0
             
+            # ALWAYS Add MP3
             formats_list.append({"id": "mp3", "type": "audio", "quality": "Audio Only (MP3)", "ext": "mp3", "size": format_bytes(mp3_size)})
 
             seen_res = set()
@@ -412,21 +416,17 @@ def get_video_formats(url):
                 h = f.get('height')
                 if not h or h in seen_res or h < 360: continue
                 if f.get('vcodec') == 'none': continue 
-
                 seen_res.add(h)
+                
                 f_size = safe_float(f.get('filesize') or f.get('filesize_approx'))
                 if f_size == 0 and duration > 0:
-                    tbr = safe_float(f.get('tbr')) 
+                    tbr = safe_float(f.get('tbr')); 
                     if tbr > 0: f_size = (tbr * 1000 * duration) / 8
                 
                 formats_list.append({
-                    "id": f"video-{h}", 
-                    "type": "video", 
-                    "quality": f"{h}p HD", 
-                    "ext": "mp4", 
-                    "size": format_bytes(f_size), 
-                    "height": h
+                    "id": f"video-{h}", "type": "video", "quality": f"{h}p", "ext": "mp4", "size": format_bytes(f_size), "height": h
                 })
+            
             formats_list.sort(key=lambda x: x.get('height', 0), reverse=True)
             return { 
                 "title": info.get("title", "YouTube Video"), 
@@ -447,15 +447,8 @@ def process_download(job_id, url, fmt_id):
                 clean_percent = re.sub(r'\x1b\[[0-9;]*m', '', raw_percent).strip()
                 job_status[job_id].update({"percent": clean_percent.replace("%",""), "speed": d.get("_speed_str", "N/A")})
 
-        # --- SMART RETRY LOGIC ---
-        # 1. Try to get exact quality requested
-        # 2. If failure (e.g. format unavailable), try 'best'
-        # -------------------------
-        
-        attempts = []
-        
-        # Build Attempt 1: Specific Format
-        ydl_opts_1 = {
+        # --- DYNAMIC CONFIGURATION ---
+        common_opts = {
             "outtmpl": os.path.join(DOWNLOAD_FOLDER, f"{job_id}_%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
@@ -463,77 +456,48 @@ def process_download(job_id, url, fmt_id):
             "ffmpeg_location": FFMPEG_PATH
         }
 
-        if fmt_id == "mp3":
-            ydl_opts_1["format"] = "bestaudio/best"
-            ydl_opts_1["postprocessors"] = [{"key": "FFmpegExtractAudio","preferredcodec": "mp3","preferredquality": "192"}]
-            attempts.append(ydl_opts_1) # Only 1 attempt for MP3
-        elif "video-" in fmt_id:
-            height = fmt_id.replace("video-", "")
-            ydl_opts_1["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
-            ydl_opts_1["merge_output_format"] = "mp4"
-            attempts.append(ydl_opts_1)
+        try:
+            # MODE 1: MP3 (Always requires FFmpeg for conversion, but let's try)
+            if fmt_id == "mp3":
+                if HAS_FFMPEG:
+                    common_opts["format"] = "bestaudio/best"
+                    common_opts["postprocessors"] = [{"key": "FFmpegExtractAudio","preferredcodec": "mp3","preferredquality": "192"}]
+                else:
+                    # No FFmpeg? Just download audio as m4a/webm (Best we can do)
+                    common_opts["format"] = "bestaudio"
             
-            # Attempt 2: Fallback to BEST available if specific failed
-            ydl_opts_2 = ydl_opts_1.copy()
-            ydl_opts_2["format"] = "best"
-            attempts.append(ydl_opts_2)
-        else:
-            ydl_opts_1["format"] = "best"
-            attempts.append(ydl_opts_1)
+            # MODE 2: SPECIFIC VIDEO (Requires Merge if 1080p+)
+            elif "video-" in fmt_id:
+                height = fmt_id.replace("video-", "")
+                if HAS_FFMPEG:
+                    # FFmpeg installed: Get exact height + audio and merge
+                    common_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+                    common_opts["merge_output_format"] = "mp4"
+                else:
+                    # FFmpeg MISSING: Force 'best' single file (prevents 'Requested format available' error)
+                    print("⚠️ FFmpeg Missing: Ignoring height request, downloading 'best' single file.")
+                    common_opts["format"] = "best"
+            
+            # MODE 3: FALLBACK
+            else:
+                common_opts["format"] = "best"
 
-        success = False
-        last_error = ""
+            # EXECUTE
+            with yt_dlp.YoutubeDL(common_opts) as ydl:
+                ydl.extract_info(url, download=True)
+                
+                # Check for output
+                found = False
+                for f in os.listdir(DOWNLOAD_FOLDER):
+                    if f.startswith(job_id):
+                        job_status[job_id].update({"status": "completed", "file": os.path.join(DOWNLOAD_FOLDER, f), "filename": f})
+                        found = True
+                        break
+                if not found: raise Exception("File missing")
 
-        for i, opts in enumerate(attempts):
-            try:
-                print(f"Attempt {i+1}/{len(attempts)} for {job_id}...")
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.extract_info(url, download=True)
-                    # Verify file exists
-                    for f in os.listdir(DOWNLOAD_FOLDER):
-                        if f.startswith(job_id):
-                            job_status[job_id].update({"status": "completed", "file": os.path.join(DOWNLOAD_FOLDER, f), "filename": f})
-                            success = True
-                            break
-                    if success: break
-                    raise Exception("File missing after download")
-            except Exception as e:
-                print(f"Attempt {i+1} Failed: {e}")
-                last_error = str(e)
-        
-        if not success:
-            job_status[job_id].update({"status": "error", "error": f"Failed: {last_error}"})
-
-@app.route("/api/info", methods=["POST", "OPTIONS"])
-def api_info(): 
-    if request.method == "OPTIONS": return jsonify({"status":"ok"}), 200
-    res = get_video_formats(request.json.get("url"))
-    return jsonify(res) if res else (jsonify({"error": "Failed"}), 400)
-
-@app.route("/api/download", methods=["POST", "OPTIONS"])
-def api_download():
-    if request.method == "OPTIONS": return jsonify({"status":"ok"}), 200
-    ip = request.remote_addr
-    if is_banned(ip): return jsonify({"error": "BANNED", "message": "IP Banned"}), 403
-    
-    conn, t = get_db_connection(); c = conn.cursor()
-    q = "SELECT value FROM settings WHERE key=%s" if t == "postgres" else "SELECT value FROM settings WHERE key=?"
-    c.execute(q, ('maintenance',)); m = c.fetchone(); conn.close()
-    if m and m['value'] == 'true' and not is_admin_request(request): return jsonify({"error": "MAINTENANCE", "message": "Under maintenance"}), 503
-
-    user_id = get_user_from_token(request)
-    tokens_left, _ = check_tokens(ip, user_id)
-
-    if tokens_left <= 0:
-        msg = "Daily limit reached (15/15)." if user_id else "Guest limit reached (5/5). Login for more!"
-        return jsonify({"error": "LIMIT_REACHED", "message": msg}), 403
-
-    consume_token(ip, user_id)
-    data = request.json
-    job_id = str(uuid.uuid4())
-    job_status[job_id] = {"status": "queued", "percent": "0"}
-    executor.submit(process_download, job_id, data.get("url"), data.get("format_id"))
-    return jsonify({"job_id": job_id})
+        except Exception as e:
+            print(f"Download Fail: {e}")
+            job_status[job_id].update({"status": "error", "error": "Failed. Server busy."})
 
 @app.route("/api/progress/<job_id>")
 def api_progress(job_id): return jsonify(job_status.get(job_id, {"status": "unknown"}))
