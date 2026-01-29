@@ -6,26 +6,39 @@ import shutil
 import uuid
 import time
 import threading
-import re
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import jwt 
 import secrets
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import jwt
 
 # -------------------------
 # CONFIGURATION
 # -------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path='')
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Secrets & Cookies
 SECRET_FILE = os.path.join(BASE_DIR, "secret.key")
 COOKIE_FILE = os.path.join(BASE_DIR, "cookies.txt")
+
+# --- DEBUG CHECKS ---
+print("--- SYSTEM STARTUP CHECKS ---")
+if os.path.exists(COOKIE_FILE):
+    print(f"✅ COOKIES FOUND: {os.path.getsize(COOKIE_FILE)} bytes")
+else:
+    print(f"⚠️ NO COOKIES FOUND (Upload cookies.txt for better reliability)")
+
+# Check for Node.js (Critical for YouTube)
+if shutil.which("node"):
+    print(f"✅ NODE.JS FOUND: {shutil.which('node')}")
+else:
+    print(f"❌ NODE.JS MISSING: YouTube downloads may fail!")
+print("-----------------------------")
 
 def get_secret_key():
     if os.environ.get('SECRET_KEY'): return os.environ.get('SECRET_KEY')
@@ -43,9 +56,8 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 for folder in [DOWNLOAD_FOLDER, UPLOAD_FOLDER]:
     os.makedirs(folder, exist_ok=True)
 
-# FFmpeg Check (CRITICAL FOR YOUTUBE MERGING)
+# FFmpeg Path
 if os.path.exists(os.path.join(BASE_DIR, "ffmpeg.exe")): FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg.exe") 
-elif os.path.exists(os.path.join(BASE_DIR, "ffmpeg")): FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg") 
 elif shutil.which("ffmpeg"): FFMPEG_PATH = shutil.which("ffmpeg") 
 else: FFMPEG_PATH = None 
 
@@ -73,7 +85,6 @@ def init_db():
     conn, db_type = get_db_connection()
     c = conn.cursor()
     
-    # Common Schema (Same as before)
     if db_type == "postgres":
         c.execute("""CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username TEXT UNIQUE, email TEXT, password TEXT, tokens INTEGER DEFAULT 15, last_reset TIMESTAMP, is_admin INTEGER DEFAULT 0, plan TEXT DEFAULT 'Free', referral_code TEXT UNIQUE, referred_by TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS guests (ip TEXT PRIMARY KEY, tokens INTEGER DEFAULT 5, last_reset TIMESTAMP)""")
@@ -82,14 +93,6 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS banned_ips (ip TEXT PRIMARY KEY, reason TEXT, timestamp TIMESTAMP)""")
         c.execute("""CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, name TEXT, email TEXT, message TEXT, timestamp TIMESTAMP)""")
         conn.commit()
-        
-        c.execute("SELECT * FROM users WHERE username=%s", ('ashishadmin',))
-        if not c.fetchone():
-            hashed = generate_password_hash("anu9936")
-            c.execute("INSERT INTO users (username, password, tokens, last_reset, is_admin, plan) VALUES (%s, %s, 999999, %s, 1, 'God Mode')", 
-                      ('ashishadmin', hashed, datetime.now()))
-            print("👑 Admin created")
-            conn.commit()
     else:
         c.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, email TEXT, password TEXT, tokens INTEGER DEFAULT 15, last_reset DATETIME, is_admin INTEGER DEFAULT 0, plan TEXT DEFAULT 'Free', referral_code TEXT UNIQUE, referred_by TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS guests (ip TEXT PRIMARY KEY, tokens INTEGER DEFAULT 5, last_reset DATETIME)")
@@ -97,12 +100,6 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, message TEXT, timestamp DATETIME)")
         c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS banned_ips (ip TEXT PRIMARY KEY, reason TEXT, timestamp DATETIME)")
-        
-        c.execute("SELECT * FROM users WHERE username='ashishadmin'")
-        if not c.fetchone():
-            hashed = generate_password_hash("anu9936")
-            c.execute("INSERT INTO users (username, password, tokens, last_reset, is_admin, plan) VALUES (?, ?, 999999, ?, 1, 'God Mode')", 
-                      ('ashishadmin', hashed, datetime.now()))
         conn.commit()
     conn.close()
 
@@ -166,8 +163,7 @@ def get_user_from_token(request):
 def is_admin_request(request):
     user_id = get_user_from_token(request)
     if not user_id: return False
-    conn, t = get_db_connection()
-    c = conn.cursor()
+    conn, t = get_db_connection(); c = conn.cursor()
     q = "SELECT is_admin FROM users WHERE id=%s" if t == "postgres" else "SELECT is_admin FROM users WHERE id=?"
     c.execute(q, (user_id,)); row = c.fetchone(); conn.close()
     return row and row['is_admin'] == 1
@@ -188,11 +184,9 @@ def register():
     data = request.json
     conn, t = get_db_connection()
     c = conn.cursor()
-    
     ref_code = (data["username"][:4] + secrets.token_hex(2)).upper()
     used_ref = data.get("referral_code", "").strip().upper()
     bonus = 0
-    
     try:
         if used_ref:
             q = "SELECT id FROM users WHERE referral_code=%s" if t == "postgres" else "SELECT id FROM users WHERE referral_code=?"
@@ -202,7 +196,6 @@ def register():
                 u_q = "UPDATE users SET tokens = tokens + 10 WHERE id=%s" if t == "postgres" else "UPDATE users SET tokens = tokens + 10 WHERE id=?"
                 c.execute(u_q, (referrer['id'] if isinstance(referrer, dict) else referrer[0],))
                 bonus = 10 
-
         q = "INSERT INTO users(username, email, password, tokens, last_reset, is_admin, plan, referral_code, referred_by) VALUES (%s, %s, %s, %s, %s, 0, 'Free', %s, %s)" if t == "postgres" else "INSERT INTO users(username, email, password, tokens, last_reset, is_admin, plan, referral_code, referred_by) VALUES (?, ?, ?, ?, ?, 0, 'Free', ?, ?)"
         c.execute(q, (data["username"].lower(), data.get("email",""), generate_password_hash(data["password"]), 15+bonus, datetime.now(), ref_code, used_ref if bonus>0 else None))
         conn.commit()
@@ -388,7 +381,7 @@ def admin_reset_pass():
     return jsonify({"message": "Reset"})
 
 # -------------------------
-# DOWNLOADER LOGIC (YOUTUBE OPTIMIZED)
+# DOWNLOADER LOGIC (DOCKER / NODE.JS COMPATIBLE)
 # -------------------------
 def format_bytes(size):
     if not size: return "N/A"
@@ -403,13 +396,11 @@ def safe_float(val):
     except: return 0.0
 
 def get_video_formats(url):
-    # YouTube Configuration (Default Headers + Cookies)
+    # Standard Config - No Spoofing Needed with Node.js present
     ydl_opts = { 
         "quiet": True, 
         "no_warnings": True, 
-        "noplaylist": True,
-        # Default user agent acts like a standard browser
-        "http_headers": { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+        "noplaylist": True, 
         "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         "ffmpeg_location": FFMPEG_PATH
     }
@@ -430,16 +421,13 @@ def get_video_formats(url):
                 h = f.get('height')
                 # Skip duplicates, low quality, and audio-only streams in the video list
                 if not h or h in seen_res or h < 360: continue
-                
-                # YouTube specific: 'avc1' is usually safer for broad compatibility
                 if f.get('vcodec') == 'none': continue 
 
                 seen_res.add(h)
                 
                 f_size = safe_float(f.get('filesize') or f.get('filesize_approx'))
-                # If size is missing (common in DASH), estimate it
                 if f_size == 0 and duration > 0:
-                    tbr = safe_float(f.get('tbr')) # Total Bitrate
+                    tbr = safe_float(f.get('tbr')) 
                     if tbr > 0: f_size = (tbr * 1000 * duration) / 8
                 
                 formats_list.append({
@@ -451,7 +439,6 @@ def get_video_formats(url):
                     "height": h
                 })
             
-            # Sort highest quality first
             formats_list.sort(key=lambda x: x.get('height', 0), reverse=True)
 
             return { 
@@ -477,9 +464,8 @@ def process_download(job_id, url, fmt_id):
             "outtmpl": os.path.join(DOWNLOAD_FOLDER, f"{job_id}_%(title)s.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
-            "concurrent_fragment_downloads": 10, # YouTube supports parallel chunks
+            "concurrent_fragment_downloads": 10,
             "buffersize": 1024 * 1024,
-            "http_headers": { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
             "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
             "ffmpeg_location": FFMPEG_PATH
         }
@@ -493,11 +479,9 @@ def process_download(job_id, url, fmt_id):
             }]
         elif "video-" in fmt_id:
             height = fmt_id.replace("video-", "")
-            # YouTube logic: Download specific video height + best available audio and MERGE them
             ydl_opts["format"] = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
             ydl_opts["merge_output_format"] = "mp4"
         else:
-            # Fallback
             ydl_opts["format"] = "best"
 
         try:
@@ -507,8 +491,10 @@ def process_download(job_id, url, fmt_id):
                     if f.startswith(job_id):
                         job_status[job_id].update({"status": "completed", "file": os.path.join(DOWNLOAD_FOLDER, f), "filename": f})
                         return
-                raise Exception("File missing")
+                # If no file found after successful yt-dlp run, something is wrong
+                raise Exception("File missing after download")
         except Exception as e:
+            print(f"Download Error: {e}")
             job_status[job_id].update({"status": "error", "error": str(e)})
 
 @app.route("/api/info", methods=["POST", "OPTIONS"])
