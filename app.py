@@ -38,20 +38,20 @@ if HAS_FFMPEG:
     print(f"✅ FFmpeg Detected: High Quality (1080p+) Enabled")
 else:
     print("⚠️ FFmpeg MISSING: Switched to Safe Mode (Max 720p)")
-    print("   (This prevents 'Requested format not available' errors)")
 
 if os.path.exists(COOKIE_FILE):
     print(f"✅ Cookies Found: {os.path.getsize(COOKIE_FILE)} bytes")
 print("----------------------")
 
 def get_secret_key():
-    if os.environ.get('SECRET_KEY'):
+    if os.environ.get('SECRET_KEY'): 
         return os.environ.get('SECRET_KEY')
+    
     if os.path.exists(SECRET_FILE):
         try: 
-            with open(SECRET_FILE, 'r') as f:
+            with open(SECRET_FILE, 'r') as f: 
                 return f.read().strip()
-        except:
+        except: 
             pass
     return secrets.token_hex(32)
 
@@ -86,7 +86,6 @@ def get_db_connection():
 def init_db():
     conn, db_type = get_db_connection()
     c = conn.cursor()
-    # Common Schema Setup
     if db_type == "postgres":
         c.execute("""CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username TEXT UNIQUE, email TEXT, password TEXT, tokens INTEGER DEFAULT 15, last_reset TIMESTAMP, is_admin INTEGER DEFAULT 0, plan TEXT DEFAULT 'Free', referral_code TEXT UNIQUE, referred_by TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS guests (ip TEXT PRIMARY KEY, tokens INTEGER DEFAULT 5, last_reset TIMESTAMP)""")
@@ -274,6 +273,107 @@ def delete_message(msg_id):
     c.execute(q, (msg_id,)); conn.commit(); conn.close()
     return jsonify({"message": "Deleted"})
 
+@app.route("/api/admin/settings", methods=["GET", "POST"])
+def manage_settings():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    if request.method == "POST":
+        data = request.json
+        if t == "postgres":
+            if "maintenance" in data: c.execute("INSERT INTO settings (key, value) VALUES ('maintenance', %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (str(data['maintenance']).lower(),))
+            if "announcement" in data: c.execute("INSERT INTO settings (key, value) VALUES ('announcement', %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (data['announcement'],))
+        else:
+            if "maintenance" in data: c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintenance', ?)", (str(data['maintenance']).lower(),))
+            if "announcement" in data: c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('announcement', ?)", (data['announcement'],))
+        conn.commit()
+    q = "SELECT value FROM settings WHERE key=%s" if t == "postgres" else "SELECT value FROM settings WHERE key=?"
+    c.execute(q, ('maintenance',)); m = c.fetchone()
+    c.execute(q, ('announcement',)); a = c.fetchone()
+    conn.close()
+    return jsonify({"maintenance": (m['value'] == 'true') if m else False, "announcement": a['value'] if a else ""})
+
+@app.route("/api/admin/ban", methods=["GET", "POST", "DELETE"])
+def manage_bans():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    if request.method == "GET":
+        c.execute("SELECT * FROM banned_ips"); bans = [dict(row) for row in c.fetchall()]; conn.close(); return jsonify(bans)
+    if request.method == "POST":
+        ip = request.json.get("ip")
+        if ip:
+            if t == "postgres": c.execute("INSERT INTO banned_ips (ip, reason, timestamp) VALUES (%s, 'Admin Ban', %s) ON CONFLICT (ip) DO UPDATE SET timestamp = EXCLUDED.timestamp", (ip, datetime.now()))
+            else: c.execute("INSERT OR REPLACE INTO banned_ips (ip, reason, timestamp) VALUES (?, 'Admin Ban', ?)", (ip, datetime.now()))
+        conn.commit()
+    if request.method == "DELETE":
+        ip = request.json.get("ip")
+        q = "DELETE FROM banned_ips WHERE ip=%s" if t == "postgres" else "DELETE FROM banned_ips WHERE ip=?"
+        c.execute(q, (ip,)); conn.commit()
+    conn.close(); return jsonify({"message": "Updated"})
+
+@app.route("/api/admin/requests", methods=["GET"])
+def get_requests():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    c.execute("SELECT * FROM payment_requests WHERE status='pending' ORDER BY timestamp DESC"); rows = c.fetchall(); conn.close()
+    return jsonify({"requests": [dict(row) for row in rows]})
+
+@app.route("/api/admin/approve", methods=["POST"])
+def approve_request():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    data = request.json; conn, t = get_db_connection(); c = conn.cursor()
+    q = "SELECT user_id, plan_name FROM payment_requests WHERE id=%s" if t == "postgres" else "SELECT user_id, plan_name FROM payment_requests WHERE id=?"
+    c.execute(q, (data.get("request_id"),)); req = c.fetchone()
+    if not req: return jsonify({"error": "Not found"}), 404
+    if data.get("action") == "approve":
+        tokens = 999999 if "God" in req['plan_name'] else 50
+        uq = "UPDATE users SET tokens = tokens + %s, plan = %s WHERE id=%s" if t == "postgres" else "UPDATE users SET tokens = tokens + ?, plan = ? WHERE id=?"
+        pq = "UPDATE payment_requests SET status='approved' WHERE id=%s" if t == "postgres" else "UPDATE payment_requests SET status='approved' WHERE id=?"
+        c.execute(uq, (tokens, req['plan_name'], req['user_id'])); c.execute(pq, (data.get("request_id"),))
+    else:
+        pq = "UPDATE payment_requests SET status='rejected' WHERE id=%s" if t == "postgres" else "UPDATE payment_requests SET status='rejected' WHERE id=?"
+        c.execute(pq, (data.get("request_id"),))
+    conn.commit(); conn.close(); return jsonify({"message": "Processed"})
+
+@app.route("/api/admin/users", methods=["GET"])
+def get_all_users():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    c.execute("SELECT id, username, email, tokens, is_admin, plan FROM users"); users = [dict(row) for row in c.fetchall()]; conn.close()
+    return jsonify({"users": users})
+
+@app.route("/api/admin/credits", methods=["POST"])
+def admin_add_credits():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    q = "UPDATE users SET tokens = tokens + %s WHERE id=%s" if t == "postgres" else "UPDATE users SET tokens = tokens + ? WHERE id=?"
+    c.execute(q, (int(request.json.get("amount",0)), request.json.get("user_id"))); conn.commit(); conn.close()
+    return jsonify({"message": "Updated"})
+
+@app.route("/api/admin/promote", methods=["POST"])
+def promote():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    q = "UPDATE users SET is_admin = %s WHERE id = %s" if t == "postgres" else "UPDATE users SET is_admin = ? WHERE id = ?"
+    c.execute(q, (1 if request.json.get("is_admin") else 0, request.json.get("user_id"))); conn.commit(); conn.close()
+    return jsonify({"message": "Updated"})
+
+@app.route("/api/admin/user/<int:user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    conn, t = get_db_connection(); c = conn.cursor()
+    q = "DELETE FROM users WHERE id = %s" if t == "postgres" else "DELETE FROM users WHERE id = ?"
+    c.execute(q, (user_id,)); conn.commit(); conn.close()
+    return jsonify({"message": "Deleted"})
+
+@app.route("/api/admin/reset-password", methods=["POST"])
+def admin_reset_pass():
+    if not is_admin_request(request): return jsonify({"error": "Unauthorized"}), 403
+    hashed = generate_password_hash(request.json.get("password"))
+    conn, t = get_db_connection(); c = conn.cursor()
+    q = "UPDATE users SET password = %s WHERE id = %s" if t == "postgres" else "UPDATE users SET password = ? WHERE id = ?"
+    c.execute(q, (hashed, request.json.get("user_id"))); conn.commit(); conn.close()
+    return jsonify({"message": "Reset"})
+
 # -------------------------
 # DOWNLOADER LOGIC (YOUTUBE + AUTO-DETECT FIX)
 # -------------------------
@@ -376,7 +476,6 @@ def process_download(job_id, url, fmt_id):
                     common_opts["merge_output_format"] = "mp4"
                 else:
                     # FALLBACK: Download best SINGLE file (usually 720p)
-                    # This prevents the "Requested format not available" error
                     print(f"⚠️ FFmpeg Missing: Cannot merge 1080p. Falling back to best single file.")
                     common_opts["format"] = "best"
             else:
